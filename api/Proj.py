@@ -5,7 +5,7 @@ from VaderSentiment.vader Sentiment import SentimentIntensityAnalyzer
 from dotenv import load_dotenv
 import os
 import transformers
-API_KEY="e052d64e474240026e6e8f338e948c46868e5780f78f9cd23fb97646cbf341bf"
+API_KEY="6e14d133-9595-4b9f-85f4-9b67304163e3"
 from dotenv import load_dotenv
 import os
 
