@@ -1,1 +1,2 @@
-Coinbase API = 6e14d133-9595-4b9f-85f4-9b67304163e3
+api_key = 'w3Lb6ULZN7TlQEnjTi8Oyf/Sp+562PAsQeSgqt92FTp7BsfyednOccMv'
+api_secret = '3B3k8iVrF9jQDbIombuSoJlGEg48bpJlzi0esHpOOnaxRzv5pDc6hte7d337Qhpna/qHVkD8kaKbBv8tO0HKDA=='
