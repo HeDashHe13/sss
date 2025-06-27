@@ -1,1 +1,147 @@
+# Install required packages
+!pip install feedparser gspread oauth2client transformers bs4 requests
+
+# --- Imports ---
+import feedparser
+import requests
+from bs4 import BeautifulSoup
+from datetime import datetime
+import hashlib
+import time
+import os
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
+from transformers import pipeline
+
+# === CONFIGURATION ===
+KEYWORDS = ["bitcoin", "ethereum", "solana"]
+RSS_FEEDS = [
+    "https://cointelegraph.com/rss",
+    "https://www.coindesk.com/arc/outboundfeeds/rss/"
+]
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+}
+CSV_FILE = "crypto_structured_dataset.csv"  # Optional local backup
+CREDS_FILE = "credentials.json"  # Make sure you've uploaded this
+SHEET_ID = "1eInZFtIaLjiCGo-TxFgNZxaHtN4yMmw9NqJkyal6xAE"
+SHEET_TAB_NAME = "crypto_structured_dataset"
+
+# === GOOGLE SHEETS SETUP ===
+def get_google_sheet():
+    scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+    creds = ServiceAccountCredentials.from_json_keyfile_name(CREDS_FILE, scope)
+    client = gspread.authorize(creds)
+    return client.open_by_key(SHEET_ID).worksheet(SHEET_TAB_NAME)
+
+sheet = get_google_sheet()
+
+# === LOAD PREVIOUS HASHES FROM SHEET (avoid duplicates) ===
+def load_seen_hashes_from_sheet():
+    try:
+        data = sheet.get_all_values()
+        return set(row[0] for row in data[1:] if row)
+    except Exception as e:
+        print(f"[Error loading hashes] {e}")
+        return set()
+
+seen_articles = load_seen_hashes_from_sheet()
+
+# === SUMMARIZER SETUP ===
+summarizer = pipeline("summarization", model="facebook/bart-large-cnn")
+
+def summarize(text, max_length=130):
+    try:
+        if len(text) < 200:
+            return text
+        summary = summarizer(text[:1024], max_length=max_length, min_length=30, do_sample=False)
+        return summary[0]['summary_text']
+    except Exception as e:
+        print(f"[Summary Error] {e}")
+        return text[:300] + "..."
+
+# === ARTICLE EXTRACTOR ===
+def extract_full_text(url):
+    try:
+        time.sleep(1.5)
+        response = requests.get(url, headers=HEADERS, timeout=10)
+        response.encoding = response.apparent_encoding
+        soup = BeautifulSoup(response.text, "html.parser")
+
+        containers = [
+            soup.find("div", class_="article__content"),
+            soup.find("div", class_="article-content"),
+            soup.find("div", class_="post-content"),
+            soup.find("article"),
+            soup.find("main"),
+            soup.body
+        ]
+
+        paragraphs = []
+        for container in containers:
+            if container:
+                paragraphs = container.find_all("p")
+                if len(paragraphs) > 2:
+                    break
+
+        text = "\n".join(p.get_text(strip=True) for p in paragraphs)
+        return text.strip()
+
+    except Exception as e:
+        print(f"[Extraction Error] {url} → {e}")
+        return ""
+
+# === MAIN PROCESSING LOOP ===
+def process_feeds():
+    for feed_url in RSS_FEEDS:
+        feed = feedparser.parse(feed_url)
+
+        for entry in feed.entries:
+            title = entry.title
+            link = entry.link
+            published = entry.get("published", datetime.utcnow().isoformat())
+            source = feed_url
+
+            # Keyword filtering
+            keyword_hit = next((k for k in KEYWORDS if k in title.lower()), None)
+            if not keyword_hit:
+                print(f"[Skipped] Not related: {title}")
+                continue
+
+            # Deduplication
+            article_hash = hashlib.md5(link.encode()).hexdigest()
+            if article_hash in seen_articles:
+                print(f"[Skipped] Duplicate: {title}")
+                continue
+            seen_articles.add(article_hash)
+
+            print(f"[Processing] {title}")
+            full_text = extract_full_text(link)
+
+            if not full_text or len(full_text) < 100:
+                print("[Warning] Article too short or failed to extract.")
+                continue
+
+            summary = summarize(full_text)
+
+            # Append to Google Sheets
+            try:
+                sheet.append_row([
+                    article_hash, title, link, published, source,
+                    keyword_hit, summary, full_text, "", ""
+                ])
+                print(f"[Saved] {title}")
+            except Exception as e:
+                print(f"[Error Saving to Sheet] {e}")
+
+            # Optional: backup to local CSV
+            with open(CSV_FILE, "a", encoding="utf-8") as f:
+                f.write(",".join([
+                    article_hash, repr(title), link, published, source,
+                    keyword_hit, repr(summary), repr(full_text), "", ""
+                ]) + "\n")
+
+# === RUN ===
+process_feeds()
+print("✅ Script completed.")
 
