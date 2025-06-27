@@ -1,1 +1,19 @@
+pip install feedparser requests beautifulsoup4 transformers torch pandas
+from google.colab import files
+files.download("crypto_structured_dataset.csv")
+!pip install gspread oauth2client
+!pip install transformers
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
 
+# Setup scope and credentials
+scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+creds = ServiceAccountCredentials.from_json_keyfile_name("credentials.json", scope)
+client = gspread.authorize(creds)
+
+# Open your sheet by ID or name
+SHEET_ID = "1eInZFtIaLjiCGo-TxFgNZxaHtN4yMmw9NqJkyal6xAE"
+worksheet = client.open_by_key(SHEET_ID).worksheet("crypto_structured_dataset")
+
+# Test: append a sample row
+sheet.append_row(["✅ It works!", "Test row from Colab"])
