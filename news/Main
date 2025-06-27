@@ -1,7 +1,7 @@
-# Install required packages
-!pip install feedparser gspread oauth2client transformers bs4 requests
+# === INSTALL DEPENDENCIES (Colab only) ===
+!pip install -q feedparser gspread oauth2client transformers bs4 requests newspaper3k
 
-# --- Imports ---
+# === IMPORTS ===
 import feedparser
 import requests
 from bs4 import BeautifulSoup
@@ -9,12 +9,14 @@ from datetime import datetime
 import hashlib
 import time
 import os
+import csv
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from transformers import pipeline
+from newspaper import Article
 
 # === CONFIGURATION ===
-KEYWORDS = ["bitcoin", "ethereum", "solana"]
+KEYWORDS = ["bitcoin", "ethereum", "solana", "SOL", "sol", "eth", "btc"]
 RSS_FEEDS = [
     "https://cointelegraph.com/rss",
     "https://www.coindesk.com/arc/outboundfeeds/rss/"
@@ -23,7 +25,7 @@ HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
 }
 CSV_FILE = "crypto_structured_dataset.csv"  # Optional local backup
-CREDS_FILE = "credentials.json"  # Make sure you've uploaded this
+CREDS_FILE = "credentials.json"  # Upload this file
 SHEET_ID = "1eInZFtIaLjiCGo-TxFgNZxaHtN4yMmw9NqJkyal6xAE"
 SHEET_TAB_NAME = "crypto_structured_dataset"
 
@@ -36,8 +38,8 @@ def get_google_sheet():
 
 sheet = get_google_sheet()
 
-# === LOAD PREVIOUS HASHES FROM SHEET (avoid duplicates) ===
-def load_seen_hashes_from_sheet():
+# === LOAD SEEN ARTICLES ===
+def load_seen_hashes():
     try:
         data = sheet.get_all_values()
         return set(row[0] for row in data[1:] if row)
@@ -45,9 +47,9 @@ def load_seen_hashes_from_sheet():
         print(f"[Error loading hashes] {e}")
         return set()
 
-seen_articles = load_seen_hashes_from_sheet()
+seen_articles = load_seen_hashes()
 
-# === SUMMARIZER SETUP ===
+# === SUMMARIZER ===
 summarizer = pipeline("summarization", model="facebook/bart-large-cnn")
 
 def summarize(text, max_length=130):
@@ -62,16 +64,34 @@ def summarize(text, max_length=130):
 
 # === ARTICLE EXTRACTOR ===
 def extract_full_text(url):
+    domain = "cointelegraph.com" in url
+
+    if not domain:
+        try:
+            article = Article(url)
+            article.download()
+            article.parse()
+            text = article.text.strip()
+            if len(text) >= 300:
+                return text
+            print(f"[Too Short (newspaper)] {len(text)} chars → {url}")
+        except Exception as e:
+            print(f"[Newspaper3k failed] {url} → {e}")
+
     try:
-        time.sleep(1.5)
-        response = requests.get(url, headers=HEADERS, timeout=10)
-        response.encoding = response.apparent_encoding
+        response = requests.get(url, headers={
+            "User-Agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/91.0.4472.124 Safari/537.36"
+            ),
+            "Accept-Language": "en-US,en;q=0.9"
+        }, timeout=10)
         soup = BeautifulSoup(response.text, "html.parser")
 
         containers = [
-            soup.find("div", class_="article__content"),
-            soup.find("div", class_="article-content"),
             soup.find("div", class_="post-content"),
+            soup.find("div", class_="article-content"),
             soup.find("article"),
             soup.find("main"),
             soup.body
@@ -84,15 +104,20 @@ def extract_full_text(url):
                 if len(paragraphs) > 2:
                     break
 
-        text = "\n".join(p.get_text(strip=True) for p in paragraphs)
-        return text.strip()
+        text = "\n".join(p.get_text(strip=True) for p in paragraphs).strip()
+        if len(text) < 300:
+            print(f"[Too Short (fallback)] {len(text)} chars → {url}")
+            return ""
+        return text
 
     except Exception as e:
-        print(f"[Extraction Error] {url} → {e}")
+        print(f"[Fallback extraction failed] {url} → {e}")
         return ""
 
-# === MAIN PROCESSING LOOP ===
+# === PROCESSING LOOP ===
 def process_feeds():
+    found_new = False
+
     for feed_url in RSS_FEEDS:
         feed = feedparser.parse(feed_url)
 
@@ -102,46 +127,46 @@ def process_feeds():
             published = entry.get("published", datetime.utcnow().isoformat())
             source = feed_url
 
-            # Keyword filtering
-            keyword_hit = next((k for k in KEYWORDS if k in title.lower()), None)
-            if not keyword_hit:
-                print(f"[Skipped] Not related: {title}")
-                continue
-
-            # Deduplication
             article_hash = hashlib.md5(link.encode()).hexdigest()
             if article_hash in seen_articles:
                 print(f"[Skipped] Duplicate: {title}")
                 continue
-            seen_articles.add(article_hash)
 
             print(f"[Processing] {title}")
             full_text = extract_full_text(link)
 
-            if not full_text or len(full_text) < 100:
+            if not full_text:
                 print("[Warning] Article too short or failed to extract.")
+                continue
+
+            keyword_hit = next((k for k in KEYWORDS if k in (title + full_text + link).lower()), None)
+            if not keyword_hit:
+                print(f"[Skipped] Not related after full text: {title}")
                 continue
 
             summary = summarize(full_text)
 
-            # Append to Google Sheets
             try:
                 sheet.append_row([
                     article_hash, title, link, published, source,
                     keyword_hit, summary, full_text, "", ""
                 ])
-                print(f"[Saved] {title}")
+                print(f"[Saved to Sheet] {title}")
+                found_new = True
             except Exception as e:
-                print(f"[Error Saving to Sheet] {e}")
+                print(f"[Google Sheets Error] {e}")
 
-            # Optional: backup to local CSV
-            with open(CSV_FILE, "a", encoding="utf-8") as f:
-                f.write(",".join([
-                    article_hash, repr(title), link, published, source,
-                    keyword_hit, repr(summary), repr(full_text), "", ""
-                ]) + "\n")
+            with open(CSV_FILE, "a", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
+                writer.writerow([
+                    article_hash, title, link, published, source,
+                    keyword_hit, summary, full_text, "", ""
+                ])
+
+    if not found_new:
+        print("✅ No new matching articles today.")
+    else:
+        print("✅ Script completed with new entries.")
 
 # === RUN ===
 process_feeds()
-print("✅ Script completed.")
-
