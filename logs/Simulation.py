@@ -1,8 +1,8 @@
 import ccxt
 
 # Replace with your Kraken API credentials
-api_key = 'w3Lb6ULZN7TlQEnjTi8Oyf/Sp+562PAsQeSgqt92FTp7BsfyednOccMv'
-api_secret = '3B3k8iVrF9jQDbIombuSoJlGEg48bpJlzi0esHpOOnaxRzv5pDc6hte7d337Qhpna/qHVkD8kaKbBv8tO0HKDA=='
+api_key = 'My_key'
+api_secret = 'My_secret'
 
 kraken = ccxt.kraken({
     'apiKey': api_key,
